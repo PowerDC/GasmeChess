@@ -23,6 +23,15 @@
   <ItemGroup>
     <Compile Include="GameChessGemini.py" />
   </ItemGroup>
+  <ItemGroup>
+    <Folder Include="styles\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="styles\background.css" />
+    <Content Include="styles\board.css" />
+    <Content Include="styles\buttons.css" />
+    <Content Include="styles\sidebar.css" />
+  </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in
        Visual Studio and specify your pre- and post-build commands in

@@ -1,0 +1,80 @@
+/* 🎯 Contenedor principal del tablero */
+.chess-area {
+    background-color: #888; /* Color del "mortero" (líneas grises) */
+    border: 6px solid #3b2f2f;
+    border-radius: 8px;
+    padding: 2px; /* Espesor del mortero exterior */
+    display: inline-block;
+    box-shadow: 0 0 20px rgba(0,0,0,0.5);
+    overflow: hidden;
+}
+
+/* 🧱 Contenedor de cada fila para el desplazamiento */
+.chess-row {
+    display: flex;
+    margin-bottom: 2px; /* Espacio gris entre filas (mortero horizontal) */
+}
+
+/* 🟫 Configuración de casillas */
+.chess-square {
+    flex: 1;
+    aspect-ratio: 1 / 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease-in-out;
+}
+
+    /* Colores de la ilusión (Alto contraste) */
+    .chess-square.light {
+        background-color: #ffffff !important;
+    }
+
+    .chess-square.dark {
+        background-color: #000000 !important;
+    }
+
+    /* Estados especiales */
+    .chess-square.selected {
+        background-color: #1e90ff !important;
+    }
+
+    .chess-square.target {
+        background-color: #add8ff !important;
+    }
+
+    .chess-square.last-move {
+        background-color: #ffd700 !important;
+    }
+
+    /* Botones y piezas */
+    .chess-square button {
+        width: 100%;
+        height: 100%;
+        background: transparent !important;
+        border: 1px solid rgba(128, 128, 128, 0.3) !important; /* Borde fino en cada cuadro */
+        font-size: 2.2em;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+/* Lógica de Desplazamiento (Offset) para la ilusión */
+/* Repetimos el patrón cada 4 filas: 0px, 12px, 24px, 12px */
+.row-offset-0 {
+    transform: translateX(0px);
+}
+
+.row-offset-1 {
+    transform: translateX(12px);
+}
+
+.row-offset-2 {
+    transform: translateX(24px);
+}
+
+.row-offset-3 {
+    transform: translateX(12px);
+}
+

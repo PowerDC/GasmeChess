@@ -1,4 +1,5 @@
-﻿import os
+﻿
+import os
 import re
 import io
 import json
@@ -12,10 +13,21 @@ from openai import OpenAI
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
-    page_title="Ajedrez con IA que 'piensa'",
+    page_title="Ajedrez con IA + Terminal Gemini",
     page_icon="♟",
     layout="wide"
 )
+
+# --- CARGAR ESTILOS GLOBALES ---
+def cargar_estilos():
+    for archivo in ["board.css", "background.css", "sidebar.css", "buttons.css"]:
+        ruta = os.path.join("styles", archivo)
+        if os.path.exists(ruta):
+            with open(ruta, "r", encoding="utf-8") as f:
+                st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+
+cargar_estilos()               
+
 
 # --- SIDEBAR DE PERSONALIZACIÓN ---
 st.sidebar.markdown("## ⚙️ Personalización visual")
@@ -43,7 +55,7 @@ st.markdown(fondo_css, unsafe_allow_html=True)
 
 # --- TÍTULO ---
 st.title("♟️ Ajedrez vs IA que 'piensa'")
-st.subheader("Desafía a OpenAI · Ollama · Gemma")
+st.subheader("Desafía a OpenAI · LM Studio · Gemma")
 
 # --- ESTADO INICIAL ---
 def inicializar_estado():
@@ -51,30 +63,36 @@ def inicializar_estado():
     if "board" not in ss: ss.board = chess.Board()
     if "history" not in ss: ss.history = []
     if "sel_from" not in ss: ss.sel_from = None
-    if "provider" not in ss: ss.provider = "openai"  # openai | ollama | gemma
+    if "provider" not in ss: ss.provider = "openai"
     if "model_openai" not in ss: ss.model_openai = "gpt-4o-mini"
-    if "model_ollama" not in ss: ss.model_ollama = "llama2:7b"
-    if "model_gemma" not in ss: ss.model_gemma = "gemma:2b"
-    if "ollama_base_url" not in ss: ss.ollama_base_url = "http://localhost:11434/v1"
+    if "model_lmstudio" not in ss: ss.model_lmstudio = ""
+    if "model_gemma" not in ss: ss.model_gemma = ""
+    if "lmstudio_base_url" not in ss: ss.lmstudio_base_url = "http://localhost:1234/v1"
     if "orientation_white" not in ss: ss.orientation_white = True
     if "models_cache_bump" not in ss: ss.models_cache_bump = 0
     if "pending_promo_move_uci" not in ss: ss.pending_promo_move_uci = None
     if "pending_promo_side" not in ss: ss.pending_promo_side = None
     if "openai_client" not in ss: ss.openai_client = None
-    if "ollama_client" not in ss: ss.ollama_client = None
+    if "lmstudio_client" not in ss: ss.lmstudio_client = None
     if "openai_key" not in ss: ss.openai_key = None
-    if "ollama_base_url_cached" not in ss: ss.ollama_base_url_cached = None
+    if "lmstudio_base_url_cached" not in ss: ss.lmstudio_base_url_cached = None
 
 inicializar_estado()
 board: chess.Board = st.session_state.board
 
 # --- SIDEBAR MODELOS ---
+PROVEEDORES = ["openai", "lmstudio", "gemma"]
+PROVEEDOR_NOMBRE = {"openai": "OpenAI", "lmstudio": "LM Studio", "gemma": "Gemma (LM Studio)"}
+PROVEEDOR_AUTOR = {"openai": "OpenAI", "lmstudio": "LM Studio", "gemma": "Gemma"}
+
 st.sidebar.markdown("## ♟️ Motor de IA")
+if st.session_state.provider not in PROVEEDORES:
+    st.session_state.provider = "openai"
 proveedor = st.sidebar.selectbox(
     "Proveedor",
-    ["openai", "ollama", "gemma"],
-    index=["openai","ollama","gemma"].index(st.session_state.provider),
-    format_func=lambda x: "OpenAI" if x=="openai" else ("Ollama" if x=="ollama" else "Gemma (Ollama)")
+    PROVEEDORES,
+    index=PROVEEDORES.index(st.session_state.provider),
+    format_func=lambda x: PROVEEDOR_NOMBRE[x]
 )
 st.session_state.provider = proveedor
 
@@ -103,21 +121,13 @@ def listar_modelos_openai_cached(api_key: str, bump: int):
         return []
 
 @st.cache_data(show_spinner=False)
-def listar_modelos_ollama_cached(base_url: str, bump: int):
+def listar_modelos_lmstudio_cached(base_url: str, bump: int):
     base_url = (base_url or "").rstrip("/")
     if not base_url: return []
     try:
         data = http_get_json(f"{base_url}/models")
         if isinstance(data, dict) and "data" in data:
-            return [m.get("id") for m in data["data"] if isinstance(m, dict)]
-    except Exception:
-        pass
-    # Fallback tags
-    try:
-        root = base_url.split("/v1")[0]
-        tags = http_get_json(f"{root}/api/tags")
-        if isinstance(tags, dict) and "models" in tags:
-            return [m.get("name") for m in tags["models"] if isinstance(m, dict)]
+            return [m.get("id") for m in data["data"] if isinstance(m, dict) and m.get("id")]
     except Exception:
         pass
     return []
@@ -126,10 +136,11 @@ def configurar_cliente_y_modelo():
     ss = st.session_state
     prov = ss.provider
     if prov == "openai":
-        api_key = st.sidebar.text_input("OPENAI_API_KEY", value=os.getenv("OPENAI_API_KEY",""), type="password")
+        api_key = st.sidebar.text_input("OPENAI_API_KEY", value=os.getenv("OPENAI_API_KEY",""), type="password").strip()
         if not api_key:
             st.warning("Introduce tu clave OpenAI.")
             st.stop()
+            raise SystemExit("Falta OPENAI_API_KEY. Ejecuta con: streamlit run GameChessGemini.py")
         if ss.openai_client is None or ss.get("openai_key") != api_key:
             ss.openai_client = OpenAI(api_key=api_key)
             ss.openai_key = api_key
@@ -144,26 +155,26 @@ def configurar_cliente_y_modelo():
             ss.model_openai = st.sidebar.text_input("Modelo OpenAI (manual)", value=ss.model_openai)
         return ss.openai_client, ss.model_openai
 
-    base_url = st.sidebar.text_input("Ollama base_url", value=ss.ollama_base_url, help="http://localhost:11434/v1")
+    base_url = st.sidebar.text_input("LM Studio base_url", value=ss.lmstudio_base_url, help="http://localhost:1234/v1")
     if st.sidebar.button("Actualizar lista"):
         ss.models_cache_bump += 1
-    modelos = listar_modelos_ollama_cached(base_url.strip(), ss.models_cache_bump) if base_url.strip() else []
+    modelos = listar_modelos_lmstudio_cached(base_url.strip(), ss.models_cache_bump) if base_url.strip() else []
 
-    if ss.ollama_client is None or ss.get("ollama_base_url_cached") != base_url:
-        ss.ollama_client = OpenAI(base_url=(base_url.strip() or "http://localhost:11434/v1"), api_key="ollama")
-        ss.ollama_base_url_cached = base_url
-    ss.ollama_base_url = base_url
+    if ss.lmstudio_client is None or ss.get("lmstudio_base_url_cached") != base_url:
+        ss.lmstudio_client = OpenAI(base_url=(base_url.strip() or "http://localhost:1234/v1"), api_key="lm-studio")
+        ss.lmstudio_base_url_cached = base_url
+    ss.lmstudio_base_url = base_url
 
-    if prov == "ollama":
+    if prov == "lmstudio":
         if modelos:
-            ss.model_ollama = st.sidebar.selectbox(
-                "Modelo Ollama",
+            ss.model_lmstudio = st.sidebar.selectbox(
+                "Modelo LM Studio",
                 modelos,
-                index=(modelos.index(ss.model_ollama) if ss.model_ollama in modelos else 0)
+                index=(modelos.index(ss.model_lmstudio) if ss.model_lmstudio in modelos else 0)
             )
         else:
-            ss.model_ollama = st.sidebar.text_input("Modelo Ollama (manual)", value=ss.model_ollama)
-        return ss.ollama_client, ss.model_ollama
+            ss.model_lmstudio = st.sidebar.text_input("Modelo LM Studio (manual)", value=ss.model_lmstudio)
+        return ss.lmstudio_client, ss.model_lmstudio
     else:  # gemma
         gemmas = [m for m in modelos if "gemma" in (m or "").lower()]
         if gemmas:
@@ -173,9 +184,9 @@ def configurar_cliente_y_modelo():
                 index=(gemmas.index(ss.model_gemma) if ss.model_gemma in gemmas else 0)
             )
         else:
-            st.sidebar.info("No se detectaron modelos Gemma. Instala: ollama pull gemma:2b")
+            st.sidebar.info("No se detectaron modelos Gemma. Carga uno en LM Studio y pulsa 'Actualizar lista'.")
             ss.model_gemma = st.sidebar.text_input("Modelo Gemma (manual)", value=ss.model_gemma)
-        return ss.ollama_client, ss.model_gemma
+        return ss.lmstudio_client, ss.model_gemma
 
 client, MODEL_NAME = configurar_cliente_y_modelo()
 
@@ -321,176 +332,87 @@ st.markdown("### Tablero interactivo")
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    if st.button("🔄 Cambiar orientación"):
+    if st.button("🔄 Rotar Tablero"):
         st.session_state.orientation_white = not st.session_state.orientation_white
-    orientation_white = st.session_state.orientation_white
-
-    selected_square = st.session_state.sel_from
-    selected_from_sq = chess.parse_square(selected_square) if selected_square else None
-    highlight_moves = legal_targets(selected_from_sq)
+    
+    orientation = st.session_state.orientation_white
+    selected_sq_name = st.session_state.sel_from
+    selected_sq = chess.parse_square(selected_sq_name) if selected_sq_name else None
+    
+    highlight_moves = [m for m in board.legal_moves if m.from_square == selected_sq] if selected_sq is not None else []
     highlight_targets = {m.to_square for m in highlight_moves}
+    
+    last_f = last_t = None
+    if board.move_stack:
+        m = board.peek()
+        last_f, last_t = m.from_square, m.to_square
 
-    ranks = range(7, -1, -1) if orientation_white else range(0, 8)
-    files = range(0, 8) if orientation_white else range(7, -1, -1)
+    ranks = range(7, -1, -1) if orientation else range(0, 8)
+    files = range(0, 8) if orientation else range(7, -1, -1)
 
     st.markdown('<div class="chess-area">', unsafe_allow_html=True)
-    css_styles = []
-
+    
     for r in ranks:
+        # 1. Aplicamos el desplazamiento de la ilusión por fila
+        row_offset_class = f"row-offset-{r % 4}"
+        st.markdown(f'<div class="chess-row {row_offset_class}">', unsafe_allow_html=True)
+        
         cols = st.columns(8, gap="small")
         for idx, f in enumerate(files):
             sq = chess.square(f, r)
             piece = board.piece_at(sq)
-            label_piece = UNICODE_PIECES.get(piece.symbol(), '') if piece else ''
             sq_name = chess.square_name(sq)
-
-            is_selected = (sq == selected_from_sq)
-            is_target = (sq in highlight_targets)
-            bg = color_casilla(sq, is_selected, is_target)
-            fg = color_texto(bg)
-            key_btn = f"square_{sq_name}"
-            wrap_id = f"wrap_{key_btn}"
-
-            btn_label = label_piece if label_piece else ("●" if is_target else " ")
-
+            
+            # Clase base: Blanco o Negro
+            base_color_class = "light" if (chess.square_rank(sq) + chess.square_file(sq)) % 2 == 0 else "dark"
+            
+            # Clases de estado
+            state_class = ""
+            if sq == selected_sq: state_class = "selected"
+            elif sq in highlight_targets: state_class = "target"
+            elif sq in (last_f, last_t): state_class = "last-move"
+            
+            btn_key = f"sq_{sq_name}_{len(board.move_stack)}"
+            label = UNICODE_PIECES.get(piece.symbol(), "") if piece else ("●" if sq in highlight_targets else " ")
+            
             with cols[idx]:
-                st.markdown(f'<div id="{wrap_id}">', unsafe_allow_html=True)
-                clicked = st.button(btn_label, key=key_btn, help=sq_name, use_container_width=True)
+                # 2. El div envuelve al botón y le pasa las clases
+                st.markdown(f'<div class="chess-square {base_color_class} {state_class}">', unsafe_allow_html=True)
+                clicked = st.button(label, key=btn_key, use_container_width=True)
                 st.markdown('</div>', unsafe_allow_html=True)
 
-            # Acumular estilos CSS para inyectarlos todos juntos al final
-            css_styles.append(f"""
-                div#{wrap_id} > button {{
-                    background-color: {bg} !important;
-                    color: {fg} !important;
-                    border: 1px solid #222 !important;
-                    height: {cell_px}px;
-                    font-size: {int(cell_px*0.5)}px;
-                    line-height: {int(cell_px*0.5)}px;
-                    padding: 0;
-                    font-weight: 600;
-                    box-shadow: none !important;
-                    border-radius: 6px;
-                    transition: all .15s ease-in-out;
-                }}
-                div#{wrap_id} > button:hover {{
-                    transform: scale(1.05);
-                    box-shadow: 0 0 8px rgba(0,0,0,.5);
-                    filter: brightness(1.1);
-                }}
-                div#{wrap_id} > button:active {{
-                    transform: scale(.97);
-                    filter: brightness(.9);
-                }}
-            """)
-
-            if clicked:
-                if st.session_state.pending_promo_move_uci:
-                    st.info("Primero resuelve la promoción pendiente.")
-                    st.rerun()
-
-                if selected_from_sq is None:
-                    if piece and piece.color == board.turn:
-                        st.session_state.sel_from = sq_name
-                        st.rerun()
-                else:
-                    if sq == selected_from_sq:
-                        st.session_state.sel_from = None
-                        st.rerun()
+                if clicked:
+                    if selected_sq is None:
+                        if piece and piece.color == board.turn:
+                            st.session_state.sel_from = sq_name
+                            st.rerun()
                     else:
-                        posibles = [m for m in highlight_moves if m.to_square == sq]
-                        if posibles:
-                            move0 = posibles[0]
-                            if es_promo_candidata(move0, board) and move0.promotion is None:
-                                st.session_state.pending_promo_move_uci = move0.uci()
-                                st.session_state.pending_promo_side = 'Humano'
-                                st.session_state.sel_from = None
-                                st.rerun()
-                            else:
-                                move = normalize_promotion_auto(move0)
-                                san = board.san(move)
-                                aplicar_movimiento(move, san, "Humano")
-                                st.rerun()
+                        if sq == selected_sq:
+                            st.session_state.sel_from = None
                         else:
-                            piece2 = board.piece_at(sq)
-                            if piece2 and piece2.color == board.turn:
-                                st.session_state.sel_from = sq_name
-                                st.rerun()
+                            move = next((m for m in board.legal_moves if m.from_square == selected_sq and m.to_square == sq), None)
+                            if move:
+                                # Promoción auto a dama si llega al final
+                                if piece_from := board.piece_at(selected_sq):
+                                    if piece_from.piece_type == chess.PAWN and chess.square_rank(sq) in (0,7):
+                                        move.promotion = chess.QUEEN
+                                aplicar_movimiento(move, board.san(move), "Humano")
+                            else:
+                                if piece and piece.color == board.turn:
+                                    st.session_state.sel_from = sq_name
+                                else:
+                                    st.session_state.sel_from = None
+                        st.rerun()
+        
+        st.markdown('</div>', unsafe_allow_html=True) # Cierra chess-row
+    
+    st.markdown('</div>', unsafe_allow_html=True) # Cierra chess-area
 
-    # Inyectar todos los estilos de una sola vez
-    st.markdown(f"<style>{''.join(css_styles)}</style>", unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # ... resto del código (promoción, movimiento manual, etc.) ...
-    # --- Promoción pendiente UI ---
-    if st.session_state.pending_promo_move_uci:
-        st.markdown("#### Promoción requerida")
-        promo_piece = st.selectbox("Promocionar a:", ["Dama", "Torre", "Alfil", "Caballo"], index=0)
-        cpr1, cpr2 = st.columns(2)
-        if cpr1.button("✅ Confirmar promoción"):
-            promo_map = {"Dama": chess.QUEEN, "Torre": chess.ROOK, "Alfil": chess.BISHOP, "Caballo": chess.KNIGHT}
-            base = chess.Move.from_uci(st.session_state.pending_promo_move_uci)
-            move = chess.Move(base.from_square, base.to_square, promotion=promo_map[promo_piece])
-            san = board.san(move)
-            aplicar_movimiento(move, san, st.session_state.pending_promo_side or "Humano")
-            st.session_state.pending_promo_move_uci = None
-            st.session_state.pending_promo_side = None
-            st.rerun()
-        if cpr2.button("❌ Cancelar"):
-            st.session_state.pending_promo_move_uci = None
-            st.session_state.pending_promo_side = None
-            st.rerun()
-
-    st.markdown("### Movimiento manual (SAN)")
-    mov_input = st.text_input("Introduce jugada (ej: e4, Nf3, O-O, exd5)")
-    c1, c2, c3 = st.columns(3)
-    if c1.button("✅ Aplicar jugada"):
-        if mov_input.strip():
-            try:
-                move = board.parse_san(mov_input.strip())
-                # Si es promoción sin pieza elegida, fuerza a dama por defecto
-                if es_promo_candidata(move, board) and move.promotion is None:
-                    move = chess.Move(move.from_square, move.to_square, promotion=chess.QUEEN)
-                aplicar_movimiento(move, mov_input.strip(), "Humano")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Jugada inválida: {e}")
-    if c2.button("🔄 Reiniciar"):
-        st.session_state.clear()
-        inicializar_estado()
-        st.success("Partida reiniciada.")
-        st.rerun()
-    if c3.button("↩️ Deshacer") and board.move_stack:
-        undone = board.pop()
-        st.session_state.history.append(f"Deshacer: {undone.uci()}")
-        st.session_state.sel_from = None
-        st.rerun()
-
-    # --- PGN ---
-    st.markdown("### PGN")
-    cpg1, cpg2 = st.columns(2)
-    with cpg1:
-        game = chess.pgn.Game.from_board(board)
-        pgn_str = str(game)
-        st.download_button("💾 Descargar PGN", data=pgn_str, file_name="partida.pgn", mime="application/x-chess-pgn")
-    with cpg2:
-        pgn_in = st.text_area("Pega PGN para cargar", value="", height=120, placeholder="[Pega aquí y pulsa Cargar]")
-        if st.button("📥 Cargar PGN"):
-            try:
-                game_in = chess.pgn.read_game(io.StringIO(pgn_in))
-                new_board = game_in.board()
-                for mv in game_in.mainline_moves():
-                    new_board.push(mv)
-                st.session_state.board = new_board
-                st.session_state.history = []
-                st.session_state.sel_from = None
-                st.success("PGN cargado.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"PGN inválido: {e}")
+    # Forzar el alto de los botones dinámicamente según el slider cell_px
+    st.markdown(f"<style>.chess-square button {{ height: {cell_px}px !important; }}</style>", unsafe_allow_html=True)
 
 with col2:
-    prov_txt = st.session_state.provider.upper()
+    prov_txt = PROVEEDOR_NOMBRE.get(st.session_state.provider, st.session_state.provider)
     st.markdown(f"### Modelo actual: {prov_txt} · {MODEL_NAME or '(sin modelo)'}")
 
     if board.is_game_over():
@@ -529,7 +451,7 @@ with col2:
                         aplicar_movimiento(
                             move,
                             jugada_san,
-                            "OpenAI" if st.session_state.provider=="openai" else ("Gemma" if st.session_state.provider=="gemma" else "Ollama")
+                            PROVEEDOR_AUTOR.get(st.session_state.provider, st.session_state.provider)
                         )
                         st.success(f"La IA juega: {jugada_san}")
                         st.rerun()
@@ -549,7 +471,7 @@ with col2:
                 aplicar_movimiento(
                     move,
                     jugada_san,
-                    "OpenAI" if st.session_state.provider=="openai" else ("Gemma" if st.session_state.provider=="gemma" else "Ollama")
+                    PROVEEDOR_AUTOR.get(st.session_state.provider, st.session_state.provider)
                 )
                 st.rerun()
         except Exception as e:
@@ -560,6 +482,7 @@ with col2:
         st.write(line)
 
 st.caption("Ejecuta: `streamlit run GameChessGemini.py`")
+
 
 # --- CSS BOTONES TRANSPARENTES ---
 st.markdown(
